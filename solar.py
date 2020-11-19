@@ -19,28 +19,32 @@ GPIO.setwarnings(False)  # disable warning from GPIO
 AZI_PWM_PIN = 12  # set pin# used to for azimuth pwm power control
 AZI_DIRECTION_PIN = 26  # set pin# used to control azimuth direction
 AZI_INCREASE = GPIO.LOW  # value needed to move westward
-AZI_DECREASE_FACTOR = 0.06  # factor * % power to calc actuator deceleration mode
-MIN_AZIMUTH_DEGREES = 115
+AZI_DECREASE_FACTOR = 0.02  # factor * % power to calc actuator deceleration mode
+AZI_SLOPE = 59.801
+AZI_OFFSET = 74.236
+MIN_AZIMUTH_DEGREES = 102
 MAX_AZIMUTH_DEGREES = 250
-AZI_MIN_DEGREES_ERR = 1.0
+AZI_MIN_DEGREES_ERR = 5.0
 
 ELV_PWM_PIN = 13  # set pin# used to for elevation pwm power control
 ELV_DIRECTION_PIN = 24  # set pin# used to control elevation direction
 ELV_INCREASE = GPIO.HIGH  # value needed to increase elevation
 ELV_DECREASE_FACTOR = 0.03  # factor * % power to calc actuator deceleration mode
-MIN_ELEVATION_DEGREES = 25
-MAX_ELEVATION_DEGREES = 85
-ELV_MIN_DEGREES_ERR = 0.5
+ELV_SLOPE = 28.398
+ELV_OFFSET = 26.602
+MIN_ELEVATION_DEGREES = 32
+MAX_ELEVATION_DEGREES = 90
+ELV_MIN_DEGREES_ERR = 2.5
 
-POWER_ADJ_BY = 6.0  # + or - power adjust percentage for each loop_interval
+POWER_ADJ_BY = 11.0  # + or - power adjust percentage for each loop_interval
 LOOP_INTERVAL_MS = 100  # loop interval in milliseconds to recheck the state of things
 
 MIN_STARTING_POWER = 10  # starting % actuator power to use to start increasing from
-MAX_POWER = 100  # max % actuator power limit
+MAX_POWER = 80  # max % actuator power limit
 PWM_HZ = 100
 
-MAX_WIND_MPH_TO_AUTO_WINDY_MODE = 10  # triggers elevation switch to stormy mode
-AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = 4
+MAX_WIND_MPH_TO_AUTO_WINDY_MODE = 15  # triggers elevation switch to stormy mode
+AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = 30
 
 GPIO.setup(ELV_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_PWM_PIN, GPIO.OUT)  # set pin as output
@@ -69,7 +73,7 @@ chan1 = AnalogIn(ads, ADS.P1)  # azimuth pot, connected so that larger voltage v
 chan2 = AnalogIn(ads, ADS.P2)  # wind speed range from 0.4V (0 mph wind) up to 2.0V (for 72.5 mph wind speed)
 
 
-# try:
+#try:
 class Modes(enum.Enum):
     RUN = 0
     MAINTENANCE = 1
@@ -182,7 +186,7 @@ class Actuator:
         pos_data = {
             "voltage": round(self.analog_channel.voltage, 4),
             "raw": self.analog_channel.value,
-            "degrees": convert_to_degrees(self.name, self.analog_channel.value)
+            "degrees": convert_to_degrees(self.name, self.analog_channel.voltage)
         }
         return pos_data
 
@@ -213,7 +217,7 @@ class PositionController:
 
     def check_windy_condition(self):
         wind_mph = get_wind_speed()
-        if wind_mph > MAX_WIND_MPH_TO_AUTO_WINDY_MODE:
+        if wind_mph >= MAX_WIND_MPH_TO_AUTO_WINDY_MODE:
             # update timestamp of windy condition
             self.last_windy_timestamp = datetime.now()
             if self.mode != Modes.AUTO_WINDY:
@@ -225,8 +229,7 @@ class PositionController:
             # not above windy trigger, check if windy timeout expired
             curr_date_time = datetime.now()
             delta_time = curr_date_time - self.last_windy_timestamp
-            minutes = delta_time.seconds / 60
-            print("delta minutes=" + str(minutes))
+            minutes = (delta_time.seconds % 3600) // 60
             if minutes > AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES:
                 self.set_mode(self.prev_mode)
 
@@ -289,6 +292,7 @@ class PositionController:
                 # start elevation actuator to requested position
                 if sub_mode == Maintenance.WASH_POSITION:
                     self.move(self.elevation_actuator, MIN_ELEVATION_DEGREES)
+                    self.move(self.azimuth_actuator, MIN_AZIMUTH_DEGREES)
                     print("set PositionController to Maintenance mode - Wash position")
                 elif sub_mode == Maintenance.STORM_POSITION:
                     self.move(self.elevation_actuator, MAX_ELEVATION_DEGREES)
@@ -315,7 +319,7 @@ class PositionController:
             print("PositionController update in run mode")
             now = datetime.now()  # current date and time
             # 2020-04-10 13:05:00-07:00 format to get a row from solar_data
-            curr_date_time = now.strftime("%Y-%m-%d %H:%M:00-07:00")
+            curr_date_time = now.strftime("%Y-%m-%d %H:%M:00-08:00")
             # print(curr_date_time)
             # based on date / time get the desired angles to be at
             # for i, j in solar_data.iterrows():
@@ -361,6 +365,7 @@ class PositionController:
             elv = self.elevation_actuator.get_current_position()
             print(elv)
             self.elevation_actuator.update()
+            self.azimuth_actuator.update()
         elif self.mode == Modes.AUTO_WINDY:
             self.elevation_actuator.update()
             # update ui to indicate it's in AUTO_WINDY mode
@@ -437,17 +442,23 @@ def update_ui_for_wind(mode):
 def get_todays_solar_data():
     print("get_todays_solar_data")
     today = pd.to_datetime('today').date()
+    print("today = " , today)
     tomorrow = pd.to_datetime('today').date() + pd.to_timedelta(1, unit='D')
+    print("tomorrow = " , tomorrow)
     # get date/times array in increments of 1 min for just today
     times = pd.date_range(today, tomorrow, closed='left', freq='1min', tz=tz)
+    print("times", times)
+    # print times[0] information
     # get the solar data for these times
     solpos = solarposition.get_solarposition(times, lat, lon)
     # keep only solar data where sun is above the horizon
     # solpos = solpos.loc[solpos['apparent_elevation'] > 0, :]
+    #print("solpos", solpos)
     return solpos
 
 
-def convert_to_degrees(name, ad_raw):
+def convert_to_degrees(name, ad_voltage):
+    print("ActuatorName: " + name + " ad_voltage: ", ad_voltage)
     if name == ActuatorNames.ELEVATION:
         # substitute with calibration data when ready
         # rough calc for now
@@ -456,17 +467,10 @@ def convert_to_degrees(name, ad_raw):
         # y = mx+b
         m = (MAX_ELEVATION_DEGREES - MIN_ELEVATION_DEGREES) / 26373
         # 85deg = m*26373 + 25deg -> 60 / 26373 = m -> 0.002085466196489
-
-        return round(ad_raw * m + MIN_ELEVATION_DEGREES, 1)
+        #return round(ad_voltage * m + MIN_ELEVATION_DEGREES, 1)
+        return round(ad_voltage * ELV_SLOPE + ELV_OFFSET, 1)
     else:
-        # substitute with calibration data when ready
-        # rough calc for now
-        # 4.1v == 32767 max reading (15 bit), pot uses a 3.3v ref voltage, max raw == 26373 == MAX_AZIMUTH_DEGREES
-        # raw 0 == MIN_AZIMUTH_DEGREES
-        # y = mx+b
-        m = (MAX_AZIMUTH_DEGREES - MIN_AZIMUTH_DEGREES) / 26373
-        # 235deg = m*26373 + 120deg -> 115 / 26373 = m -> 0.004360520229022
-        return round(ad_raw * m + MIN_AZIMUTH_DEGREES, 1)
+        return round(ad_voltage * AZI_SLOPE + AZI_OFFSET, 1)
 
 
 def get_current_solar_data_for_timestamp(ts):
@@ -560,7 +564,7 @@ form.protocol("WM_DELETE_WINDOW", on_closing)
 
 form.mainloop()
 
-# except:
-# print("exception occurred")
-# elevation_power.start(0)
-# azimuth_power.start(0)
+#except:
+#print("exception occurred")
+#elevation_power.start(0)
+#azimuth_power.start(0)
