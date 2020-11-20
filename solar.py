@@ -20,55 +20,52 @@ logging.basicConfig(filename='solar.log', filemode='w', format='%(asctime)s | %(
 # whereever you want to write a log message
 logging.info('solar data %s %s', string1, string2)
 
+config = ConfigParser.ConfigParser()
+config.read("solar.properties")
+CONFIG_SECTION = "solar_config"
+
+tz = config.get(CONFIG_SECTION, 'tz')
+lat = float(config.get(CONFIG_SECTION, 'lat'))
+lon = float(config.get(CONFIG_SECTION, 'lon'))
+last_check_of_today = config.get(CONFIG_SECTION, 'last_check_of_today')
+
+AZI_SLOPE = int(config.get(CONFIG_SECTION, 'AZI_SLOPE'))
+AZI_OFFSET = int(config.get(CONFIG_SECTION, 'AZI_OFFSET'))
+AZI_PWM_PIN = int(config.get(CONFIG_SECTION, 'AZI_PWM_PIN'))  # set pin# used to for azimuth pwm power control
+AZI_DIRECTION_PIN = int(config.get(CONFIG_SECTION, 'AZI_DIRECTION_PIN'))  # set pin# used to control azimuth direction
+AZI_INCREASE = GPIO.LOW  # value needed to move westward
+AZI_DECREASE_FACTOR = float(config.get(CONFIG_SECTION, 'AZI_DECREASE_FACTOR'))  # factor * % power to calc actuator deceleration mode
+
+MIN_AZIMUTH_DEGREES = int(config.get(CONFIG_SECTION, 'MIN_AZIMUTH_DEGREES'))
+MAX_AZIMUTH_DEGREES = int(config.get(CONFIG_SECTION, 'MAX_AZIMUTH_DEGREES'))
+AZI_MIN_DEGREES_ERR = float(config.get(CONFIG_SECTION, 'AZI_MIN_DEGREES_ERR'))
+
+ELV_PWM_PIN = int(config.get(CONFIG_SECTION, 'ELV_PWM_PIN'))  # set pin# used to for elevation pwm power control
+ELV_DIRECTION_PIN = int(config.get(CONFIG_SECTION, 'ELV_DIRECTION_PIN'))  # set pin# used to control elevation direction
+ELV_INCREASE = GPIO.HIGH  # value needed to increase elevation
+ELV_DECREASE_FACTOR = float(config.get(CONFIG_SECTION, 'ELV_DECREASE_FACTOR'))  # factor * % power to calc actuator deceleration mode
+ELV_SLOPE = float(config.get(CONFIG_SECTION, 'ELV_SLOPE'))
+ELV_OFFSET = float(config.get(CONFIG_SECTION, 'ELV_OFFSET'))
+MIN_ELEVATION_DEGREES = int(config.get(CONFIG_SECTION, 'MIN_ELEVATION_DEGREES'))
+MAX_ELEVATION_DEGREES = int(config.get(CONFIG_SECTION, 'MAX_ELEVATION_DEGREES'))
+ELV_MIN_DEGREES_ERR = float(config.get(CONFIG_SECTION, 'ELV_MIN_DEGREES_ERR'))
+
+POWER_ADJ_BY = float(config.get(CONFIG_SECTION, 'POWER_ADJ_BY'))  # + or - power adjust percentage for each loop_interval
+LOOP_INTERVAL_MS = int(config.get(CONFIG_SECTION, 'LOOP_INTERVAL_MS'))  # loop interval in milliseconds to recheck the state of things
+
+MIN_STARTING_POWER = int(config.get(CONFIG_SECTION, 'MIN_STARTING_POWER'))  # starting % actuator power to use to start increasing from
+MAX_POWER = int(config.get(CONFIG_SECTION, 'MAX_POWER'))  # max % actuator power limit
+PWM_HZ = int(config.get(CONFIG_SECTION, 'PWM_HZ'))
+
+MAX_WIND_MPH_TO_AUTO_WINDY_MODE = int(config.get(CONFIG_SECTION, 'MAX_WIND_MPH_TO_AUTO_WINDY_MODE'))  # triggers elevation switch to stormy mode
+AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = int(config.get(CONFIG_SECTION, 'AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES'))
+
 GPIO.setmode(GPIO.BCM)  # GPIO Broadcom pin-numbering scheme
 GPIO.setwarnings(False)  # disable warning from GPIO
-
-AZI_PWM_PIN = 12  # set pin# used to for azimuth pwm power control
-AZI_DIRECTION_PIN = 26  # set pin# used to control azimuth direction
-AZI_INCREASE = GPIO.LOW  # value needed to move westward
-AZI_DECREASE_FACTOR = 0.02  # factor * % power to calc actuator deceleration mode
-
-AZI_SLOPE = 59.801
-AZI_OFFSET = 74.236
-MIN_AZIMUTH_DEGREES = 102
-MAX_AZIMUTH_DEGREES = 250
-AZI_MIN_DEGREES_ERR = 5.0
-
-ELV_PWM_PIN = 13  # set pin# used to for elevation pwm power control
-ELV_DIRECTION_PIN = 24  # set pin# used to control elevation direction
-ELV_INCREASE = GPIO.HIGH  # value needed to increase elevation
-ELV_DECREASE_FACTOR = 0.03  # factor * % power to calc actuator deceleration mode
-ELV_SLOPE = 28.398
-ELV_OFFSET = 26.602
-MIN_ELEVATION_DEGREES = 32
-MAX_ELEVATION_DEGREES = 90
-ELV_MIN_DEGREES_ERR = 2.5
-
-POWER_ADJ_BY = 11.0  # + or - power adjust percentage for each loop_interval
-LOOP_INTERVAL_MS = 100  # loop interval in milliseconds to recheck the state of things
-
-MIN_STARTING_POWER = 10  # starting % actuator power to use to start increasing from
-MAX_POWER = 80  # max % actuator power limit
-PWM_HZ = 100
-
-MAX_WIND_MPH_TO_AUTO_WINDY_MODE = 15  # triggers elevation switch to stormy mode
-AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = 30
-
 GPIO.setup(ELV_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_DIRECTION_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(ELV_DIRECTION_PIN, GPIO.OUT)  # set pin as output
-
-config = ConfigParser.ConfigParser()
-config.read("solar.properties")
-CONFIG_SECTION = "solar_config"
-AZI_SLOPE = int(config.get(CONFIG_SECTION, 'AZI_SLOPE'))
-AZI_OFFSET = int(config.get(CONFIG_SECTION, 'AZI_OFFSET'))
-
-tz = 'America/Los_Angeles'
-lat = 37.9810
-lon = -120.6419
-last_check_of_today = '2020-01-01 00:00:00-07:00'
 
 sleep(1)  # delay for 1 seconds
 
