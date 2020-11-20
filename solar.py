@@ -12,6 +12,13 @@ import board
 import busio
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
+import ConfigParser
+import logging
+# add to enable a logger object
+logging.basicConfig(filename='solar.log', filemode='w', format='%(asctime)s | %(message)s', level=logging.INFO)
+
+# whereever you want to write a log message
+logging.info('solar data %s %s', string1, string2)
 
 GPIO.setmode(GPIO.BCM)  # GPIO Broadcom pin-numbering scheme
 GPIO.setwarnings(False)  # disable warning from GPIO
@@ -20,6 +27,7 @@ AZI_PWM_PIN = 12  # set pin# used to for azimuth pwm power control
 AZI_DIRECTION_PIN = 26  # set pin# used to control azimuth direction
 AZI_INCREASE = GPIO.LOW  # value needed to move westward
 AZI_DECREASE_FACTOR = 0.02  # factor * % power to calc actuator deceleration mode
+
 AZI_SLOPE = 59.801
 AZI_OFFSET = 74.236
 MIN_AZIMUTH_DEGREES = 102
@@ -51,6 +59,17 @@ GPIO.setup(AZI_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_DIRECTION_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(ELV_DIRECTION_PIN, GPIO.OUT)  # set pin as output
 
+config = ConfigParser.ConfigParser()
+config.read("solar.properties")
+CONFIG_SECTION = "solar_config"
+AZI_SLOPE = int(config.get(CONFIG_SECTION, 'AZI_SLOPE'))
+AZI_OFFSET = int(config.get(CONFIG_SECTION, 'AZI_OFFSET'))
+
+tz = 'America/Los_Angeles'
+lat = 37.9810
+lon = -120.6419
+last_check_of_today = '2020-01-01 00:00:00-07:00'
+
 sleep(1)  # delay for 1 seconds
 
 azimuth_power = GPIO.PWM(AZI_PWM_PIN, PWM_HZ)  # for azimuth power pin used and pwm frequency hz
@@ -59,9 +78,6 @@ azimuth_power.start(0)
 elevation_power = GPIO.PWM(ELV_PWM_PIN, PWM_HZ)  # for elevation power pin used and pwm frequency hz
 elevation_power.start(0)
 
-tz = 'America/Los_Angeles'
-lat, lon = 37.9810, -120.6419
-last_check_of_today = '2020-01-01 00:00:00-07:00'
 solar_data = None
 # Create the I2C bus
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -71,7 +87,6 @@ ads = ADS.ADS1115(i2c)
 chan0 = AnalogIn(ads, ADS.P0)  # elevation pot, connected so that larger voltage values == greater elevation
 chan1 = AnalogIn(ads, ADS.P1)  # azimuth pot, connected so that larger voltage values == more westward
 chan2 = AnalogIn(ads, ADS.P2)  # wind speed range from 0.4V (0 mph wind) up to 2.0V (for 72.5 mph wind speed)
-
 
 #try:
 class Modes(enum.Enum):
