@@ -12,15 +12,15 @@ import board
 import busio
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
-import ConfigParser
+import configparser
 import logging
 # add to enable a logger object
 logging.basicConfig(filename='solar.log', filemode='w', format='%(asctime)s | %(message)s', level=logging.INFO)
 
 # whereever you want to write a log message
-logging.info('solar data %s %s', string1, string2)
+logging.info('solar data %s %s', "string1", "string2")
 
-config = ConfigParser.ConfigParser()
+config = configparser.ConfigParser()
 config.read("solar.properties")
 CONFIG_SECTION = "solar_config"
 
@@ -29,8 +29,8 @@ lat = float(config.get(CONFIG_SECTION, 'lat'))
 lon = float(config.get(CONFIG_SECTION, 'lon'))
 last_check_of_today = config.get(CONFIG_SECTION, 'last_check_of_today')
 
-AZI_SLOPE = int(config.get(CONFIG_SECTION, 'AZI_SLOPE'))
-AZI_OFFSET = int(config.get(CONFIG_SECTION, 'AZI_OFFSET'))
+AZI_SLOPE = float(config.get(CONFIG_SECTION, 'AZI_SLOPE'))
+AZI_OFFSET = float(config.get(CONFIG_SECTION, 'AZI_OFFSET'))
 AZI_PWM_PIN = int(config.get(CONFIG_SECTION, 'AZI_PWM_PIN'))  # set pin# used to for azimuth pwm power control
 AZI_DIRECTION_PIN = int(config.get(CONFIG_SECTION, 'AZI_DIRECTION_PIN'))  # set pin# used to control azimuth direction
 AZI_INCREASE = GPIO.LOW  # value needed to move westward
@@ -470,7 +470,7 @@ def get_todays_solar_data():
 
 
 def convert_to_degrees(name, ad_voltage):
-    print("ActuatorName: " + name + " ad_voltage: ", ad_voltage)
+    #print("ActuatorName: " + name + " ad_voltage: " + str(ad_voltage))
     if name == ActuatorNames.ELEVATION:
         # substitute with calibration data when ready
         # rough calc for now
