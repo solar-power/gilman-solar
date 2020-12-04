@@ -7,45 +7,58 @@ from time import sleep  # import function sleep for delay
 from pvlib import solarposition
 import pandas as pd
 import enum
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import board
 import busio
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
+import configparser
+import logging
+import sys
+import copy
 
-GPIO.setmode(GPIO.BCM)  # GPIO Broadcom pin-numbering scheme
-GPIO.setwarnings(False)  # disable warning from GPIO
+config = configparser.ConfigParser()
+config.read("solar.properties")
+CONFIG_SECTION = "solar_config"
 
+AZI_DECREASE_WIN_DEG = float(
+    config.get(CONFIG_SECTION, 'AZI_DECREASE_WIN_DEG'))  # factor * % power to calc actuator deceleration mode
+MIN_AZIMUTH_DEGREES = int(config.get(CONFIG_SECTION, 'MIN_AZIMUTH_DEGREES'))
+MIN_AZIMUTH_VOLTS = float(config.get(CONFIG_SECTION, 'MIN_AZIMUTH_VOLTS'))
+MAX_AZIMUTH_DEGREES = int(config.get(CONFIG_SECTION, 'MAX_AZIMUTH_DEGREES'))
+MAX_AZIMUTH_VOLTS = float(config.get(CONFIG_SECTION, 'MAX_AZIMUTH_VOLTS'))
+AZI_MIN_DEGREES_ERR = float(config.get(CONFIG_SECTION, 'AZI_MIN_DEGREES_ERR'))
+
+ELV_DECREASE_WIN_DEG = float(
+    config.get(CONFIG_SECTION, 'ELV_DECREASE_WIN_DEG'))  # factor * % power to calc actuator deceleration mode
+MIN_ELEVATION_DEGREES = int(config.get(CONFIG_SECTION, 'MIN_ELEVATION_DEGREES'))
+MIN_ELEVATION_VOLTS = float(config.get(CONFIG_SECTION, 'MIN_ELEVATION_VOLTS'))
+MAX_ELEVATION_DEGREES = int(config.get(CONFIG_SECTION, 'MAX_ELEVATION_DEGREES'))
+MAX_ELEVATION_VOLTS = float(config.get(CONFIG_SECTION, 'MAX_ELEVATION_VOLTS'))
+ELV_MIN_DEGREES_ERR = float(config.get(CONFIG_SECTION, 'ELV_MIN_DEGREES_ERR'))
+
+POWER_ADJ_BY = float(config.get(CONFIG_SECTION, 'POWER_ADJ_BY'))  # + or - power adjust percentage for each loop_interval
+LOOP_INTERVAL_MS = int(config.get(CONFIG_SECTION, 'LOOP_INTERVAL_MS'))  # loop interval in milliseconds to recheck the state of things
+
+MIN_STARTING_POWER = int(config.get(CONFIG_SECTION, 'MIN_STARTING_POWER'))  # starting % actuator power to use to start increasing from
+MAX_POWER = int(config.get(CONFIG_SECTION, 'MAX_POWER'))  # max % actuator power limit
+PWM_HZ = int(config.get(CONFIG_SECTION, 'PWM_HZ'))
+
+MAX_WIND_MPH_TO_AUTO_WINDY_MODE = int(config.get(CONFIG_SECTION, 'MAX_WIND_MPH_TO_AUTO_WINDY_MODE'))  # triggers elevation switch to stormy mode
+AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = int(config.get(CONFIG_SECTION, 'AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES'))
+
+LAT = float(config.get(CONFIG_SECTION, 'LAT'))
+LON = float(config.get(CONFIG_SECTION, 'LON'))
+
+# initialize GPIO pins, I/O directions and PWM usage
 AZI_PWM_PIN = 12  # set pin# used to for azimuth pwm power control
 AZI_DIRECTION_PIN = 26  # set pin# used to control azimuth direction
 AZI_INCREASE = GPIO.LOW  # value needed to move westward
-AZI_DECREASE_FACTOR = 0.02  # factor * % power to calc actuator deceleration mode
-AZI_SLOPE = 59.801
-AZI_OFFSET = 74.236
-MIN_AZIMUTH_DEGREES = 102
-MAX_AZIMUTH_DEGREES = 250
-AZI_MIN_DEGREES_ERR = 5.0
-
 ELV_PWM_PIN = 13  # set pin# used to for elevation pwm power control
 ELV_DIRECTION_PIN = 24  # set pin# used to control elevation direction
 ELV_INCREASE = GPIO.HIGH  # value needed to increase elevation
-ELV_DECREASE_FACTOR = 0.03  # factor * % power to calc actuator deceleration mode
-ELV_SLOPE = 28.398
-ELV_OFFSET = 26.602
-MIN_ELEVATION_DEGREES = 32
-MAX_ELEVATION_DEGREES = 90
-ELV_MIN_DEGREES_ERR = 2.5
-
-POWER_ADJ_BY = 11.0  # + or - power adjust percentage for each loop_interval
-LOOP_INTERVAL_MS = 100  # loop interval in milliseconds to recheck the state of things
-
-MIN_STARTING_POWER = 10  # starting % actuator power to use to start increasing from
-MAX_POWER = 80  # max % actuator power limit
-PWM_HZ = 100
-
-MAX_WIND_MPH_TO_AUTO_WINDY_MODE = 15  # triggers elevation switch to stormy mode
-AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = 30
-
+GPIO.setmode(GPIO.BCM)  # GPIO Broadcom pin-numbering scheme
+GPIO.setwarnings(False)  # disable warning from GPIO
 GPIO.setup(ELV_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_PWM_PIN, GPIO.OUT)  # set pin as output
 GPIO.setup(AZI_DIRECTION_PIN, GPIO.OUT)  # set pin as output
@@ -59,11 +72,7 @@ azimuth_power.start(0)
 elevation_power = GPIO.PWM(ELV_PWM_PIN, PWM_HZ)  # for elevation power pin used and pwm frequency hz
 elevation_power.start(0)
 
-tz = 'America/Los_Angeles'
-lat, lon = 37.9810, -120.6419
-last_check_of_today = '2020-01-01 00:00:00-07:00'
-solar_data = None
-# Create the I2C bus
+# Create the I2C bus for use with ADC board
 i2c = busio.I2C(board.SCL, board.SDA)
 # Create the ADC object using the I2C bus
 ads = ADS.ADS1115(i2c)
@@ -72,8 +81,12 @@ chan0 = AnalogIn(ads, ADS.P0)  # elevation pot, connected so that larger voltage
 chan1 = AnalogIn(ads, ADS.P1)  # azimuth pot, connected so that larger voltage values == more westward
 chan2 = AnalogIn(ads, ADS.P2)  # wind speed range from 0.4V (0 mph wind) up to 2.0V (for 72.5 mph wind speed)
 
+solar_data = None
 
-#try:
+# enable logger object
+logging.basicConfig(filename='solar.log', filemode='a', format='%(asctime)s | %(message)s', level=logging.INFO)
+
+
 class Modes(enum.Enum):
     RUN = 0
     MAINTENANCE = 1
@@ -112,28 +125,27 @@ class Actuator:
 
     def move_to(self, to_degrees):
         # print("actu move_to " + str(self.name))
+        # self.pwm_power_control.start(0)
         self.to_degrees = to_degrees
         curr_pos = self.get_current_position()
         curr_pos_degrees = curr_pos["degrees"]
-        # if self.name == ActuatorNames.ELEVATION:
-        #     config_min_degs_err = ELV_MIN_DEGREES_ERR
-        # else:
-        #     config_min_degs_err = AZI_MIN_DEGREES_ERR
+        err_degs = to_degrees - curr_pos_degrees
 
-        print("actu move_to curr=" + str(curr_pos_degrees) + " to_deg=" + str(self.to_degrees))
+        logging.info("move_to start {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees, err_degs))
+        print(str(self.name) + " move_to() curr=" + str(curr_pos_degrees) + " to_deg=" + str(self.to_degrees))
         if self.value_used_to_increase_dir == GPIO.HIGH:
             decrease_value_dir = GPIO.LOW
         else:
             decrease_value_dir = GPIO.HIGH
         # check which direction to move to
-        if self.to_degrees - curr_pos["degrees"] > 0:
+        if self.to_degrees - curr_pos_degrees > 0:
             # print("actu move_to set increase direction - " + str(self.value_used_to_increase_dir))
             GPIO.output(self.dir_pin, self.value_used_to_increase_dir)
         else:
             GPIO.output(self.dir_pin, decrease_value_dir)
 
         self.powering_mode = PoweringMode.INCREASE
-        self.pwm_power_control.start(MIN_STARTING_POWER)
+        # self.pwm_power_control.ChangeDutyCycle(MIN_STARTING_POWER)
 
     def increment_power(self):
         self.power += POWER_ADJ_BY
@@ -149,33 +161,45 @@ class Actuator:
         if self.power <= 0:
             self.power = 0
             self.powering_mode = PoweringMode.IDLE
+            # self.pwm_power_control.stop()
+            curr_pos = self.get_current_position()
+            curr_pos_degrees = curr_pos["degrees"]
+            err_degs = self.to_degrees - curr_pos_degrees
+            logging.info("move_to end {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees, err_degs))
+
         self.pwm_power_control.start(self.power)
         print(str(self.name) + " pwr dec to=" + str(round(self.power, 1)))
 
     def update(self):
-        print("actu update " + str(self.name))
+        # print("actu update " + str(self.name))
         curr_pos = self.get_current_position()
         curr_degs = curr_pos["degrees"]
         curr_degs_err = self.to_degrees - curr_degs
         if self.powering_mode == PoweringMode.INCREASE:
             # check if need to switch to decreasing power
-            power = self.power - MIN_STARTING_POWER  # reduces sensitivity to starting power
+            # power = self.power - MIN_STARTING_POWER  # reduces sensitivity to starting power
             if self.name == ActuatorNames.ELEVATION:
-                decr_win_size_degs = ELV_DECREASE_FACTOR * power
+                decr_win_size_degs = ELV_DECREASE_WIN_DEG
             else:
-                decr_win_size_degs = AZI_DECREASE_FACTOR * power
+                decr_win_size_degs = AZI_DECREASE_WIN_DEG
 
-            print("actu update err=" + str(round(curr_degs_err, 1)) + " win=" + str(round(decr_win_size_degs, 1)))
+            # reduce window size by power percentage
+            decr_win_size_degs = decr_win_size_degs * self.power / 100
+
+            print(str(self.name) + " update() curr=" + str(round(curr_degs, 1)) + " to=" + str(
+                round(self.to_degrees, 1)) + " err=" + str(round(curr_degs_err, 1)) + " win=" + str(
+                round(decr_win_size_degs, 1)))
             if abs(curr_degs_err) <= decr_win_size_degs:
                 self.powering_mode = PoweringMode.DECREASE
-                print("actu set powering mode to decrease")
-                self.decrement_power()
+                print(str(self.name) + " update() set powering mode to decrease")
+                # self.decrement_power()
             else:
                 self.increment_power()
 
         if self.powering_mode == PoweringMode.DECREASE:
             self.decrement_power()
-            print(str(self.name) + "actu update err=" + str(round(curr_degs_err, 1)))
+            print(str(self.name) + " update() curr=" + str(round(curr_degs, 1)) + " to=" + str(
+                round(self.to_degrees, 1)) + " err=" + str(round(curr_degs_err, 1)))
 
     def stop(self):
         self.power = 0
@@ -203,13 +227,13 @@ class PositionController:
         # initialize previous position with the current positions of the actuators
         curr_pos = self.elevation_actuator.get_current_position()
         curr_pos_degrees = curr_pos["degrees"]
-        self.prev_elv_move_to_degrees = curr_pos_degrees
+        self.prev_elv_move_to_degrees = copy.deepcopy(curr_pos_degrees)
         curr_pos = self.azimuth_actuator.get_current_position()
         curr_pos_degrees = curr_pos["degrees"]
-        self.prev_azi_move_to_degrees = curr_pos_degrees
+        self.prev_azi_move_to_degrees = copy.deepcopy(curr_pos_degrees)
 
         self.prev_mode = Modes.RUN
-        self.last_windy_timestamp = datetime.now()
+        self.last_windy_timestamp = get_system_time()
 
     def stop(self):
         self.elevation_actuator.stop()
@@ -219,7 +243,7 @@ class PositionController:
         wind_mph = get_wind_speed()
         if wind_mph >= MAX_WIND_MPH_TO_AUTO_WINDY_MODE:
             # update timestamp of windy condition
-            self.last_windy_timestamp = datetime.now()
+            self.last_windy_timestamp = get_system_time()
             if self.mode != Modes.AUTO_WINDY:
                 # record last mode
                 self.prev_mode = self.mode
@@ -227,7 +251,7 @@ class PositionController:
                 self.set_mode(Modes.AUTO_WINDY)
         elif self.mode == Modes.AUTO_WINDY:
             # not above windy trigger, check if windy timeout expired
-            curr_date_time = datetime.now()
+            curr_date_time = get_system_time()
             delta_time = curr_date_time - self.last_windy_timestamp
             minutes = (delta_time.seconds % 3600) // 60
             if minutes > AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES:
@@ -235,7 +259,7 @@ class PositionController:
 
     def move(self, actuator, degrees):
         if actuator.name == ActuatorNames.ELEVATION:
-            print("move =" + str(degrees) + " prev=" + str(self.prev_elv_move_to_degrees))
+            # print("posctlr ele move =" + str(degrees) + " prev=" + str(self.prev_elv_move_to_degrees))
             # ignore issuing move_to if previous position commanded is the same
             if self.prev_elv_move_to_degrees != degrees:
                 # check if the move delta qualifies to try to actually attempt a move
@@ -250,13 +274,20 @@ class PositionController:
                         # subtract err window size
                         new_pos = degrees - ELV_MIN_DEGREES_ERR
 
+                    # clamp the degs to not exceed min / max
+                    if new_pos < MIN_ELEVATION_DEGREES:
+                        new_pos = MIN_ELEVATION_DEGREES
+
+                    if new_pos > MAX_ELEVATION_DEGREES:
+                        new_pos = MAX_ELEVATION_DEGREES
+
                     self.elevation_actuator.move_to(new_pos)
                     print("posCntlr move elv " + str(actuator.name) + " to_deg=" + str(new_pos))
 
-                #update prev state
-                self.prev_elv_move_to_degrees = degrees
+                # update prev state
+                self.prev_elv_move_to_degrees = copy.deepcopy(degrees)
         else:
-            print("move =" + str(degrees) + " prev=" + str(self.prev_azi_move_to_degrees))
+            # print("posctlr azi move =" + str(degrees) + " prev=" + str(self.prev_azi_move_to_degrees))
             # ignore issuing move_to if previous position commanded is the same
             if self.prev_azi_move_to_degrees != degrees:
                 # check if the move delta qualifies to try to actually attempt a move
@@ -271,12 +302,19 @@ class PositionController:
                         # subtract err window size
                         new_pos = degrees - AZI_MIN_DEGREES_ERR
 
+                    # clamp the degs to not exceed min / max
+                    if new_pos < MIN_AZIMUTH_DEGREES:
+                        new_pos = MIN_AZIMUTH_DEGREES
+
+                    if new_pos > MAX_AZIMUTH_DEGREES:
+                        new_pos = MAX_AZIMUTH_DEGREES
+
                     self.prev_azi_move_to_degrees = degrees
                     self.azimuth_actuator.move_to(new_pos)
                     print("posCntlr move azi " + str(actuator.name) + " to_deg=" + str(new_pos))
 
-                #update prev state
-                self.prev_azi_move_to_degrees = degrees
+                # update prev state
+                self.prev_azi_move_to_degrees = copy.deepcopy(degrees)
 
     def set_mode(self, mode, sub_mode=None):
         if mode == Modes.RUN:
@@ -309,35 +347,33 @@ class PositionController:
             # default to mode Calibrate if not the other modes
             print("set PositionController to Calibrate mode")
 
-    def update(self):
-        # print("positioncontroller update called")
+    def update(self, sys_date_time):
         # first check on windy condition status
         self.check_windy_condition()
 
         if self.mode == Modes.RUN:
             # check current state of system and adjust
-            print("PositionController update in run mode")
-            now = datetime.now()  # current date and time
-            # 2020-04-10 13:05:00-07:00 format to get a row from solar_data
-            curr_date_time = now.strftime("%Y-%m-%d %H:%M:00-08:00")
+            # print("PositionController update in run mode")
+            # 2020-04-10 13:05:00-00:00 format to get a row from solar_data
+            curr_date_time = sys_date_time.strftime("%Y-%m-%d %H:%M:00-00:00")
             # print(curr_date_time)
             # based on date / time get the desired angles to be at
-            # for i, j in solar_data.iterrows():
-            #    print(i, j)
-            #    print()
             solar_position_now = solar_data.loc[curr_date_time]
             # get actuator positions
             elv = self.elevation_actuator.get_current_position()
             azi = self.azimuth_actuator.get_current_position()
             update_ui_with_solar_data(solar_position_now, elv, azi)
             update_ui_for_wind(self.mode)
-            print("solar elv=" + str(round(solar_position_now.apparent_elevation, 1)) + " pos=" + str(elv['degrees']))
-            print("solar azi=" + str(round(solar_position_now.azimuth, 1)) + " pos=" + str(azi['degrees']))
+            # print("solar elv=" + str(round(solar_position_now.apparent_elevation, 1)) + " pos=" + str(elv['degrees']))
+            # print("solar azi=" + str(round(solar_position_now.azimuth, 1)) + " pos=" + str(azi['degrees']))
 
             # check limits
             solar_elv_adjusted = round(solar_position_now.apparent_elevation, 1)
             if solar_elv_adjusted < MIN_ELEVATION_DEGREES:
                 solar_elv_adjusted = MIN_ELEVATION_DEGREES
+            elif solar_elv_adjusted > MAX_ELEVATION_DEGREES:
+                # clamp ele at max if needed
+                solar_elv_adjusted = MAX_ELEVATION_DEGREES
 
             solar_azi_adjusted = round(solar_position_now.azimuth, 1)
             if solar_azi_adjusted < MIN_AZIMUTH_DEGREES:
@@ -359,21 +395,25 @@ class PositionController:
             self.move(self.azimuth_actuator, solar_azi_adjusted)
             self.azimuth_actuator.update()
         elif self.mode == Modes.MAINTENANCE:
+            degrees = get_solar_degrees(sys_date_time)
+            print("sun=", degrees)
             # check current state of system and adjust
-            print("PositionController update in Maintenance mode")
-            # get elevation actuator position
-            elv = self.elevation_actuator.get_current_position()
-            print(elv)
+            # print("PositionController update in Maintenance mode")
+            # get actuator positions
+            azi = self.azimuth_actuator.get_current_position()
+            print("azi=", azi)
+            ele = self.elevation_actuator.get_current_position()
+            print("ele=", ele)
             self.elevation_actuator.update()
             self.azimuth_actuator.update()
         elif self.mode == Modes.AUTO_WINDY:
             self.elevation_actuator.update()
             # update ui to indicate it's in AUTO_WINDY mode
             update_ui_for_wind(self.mode)
-        else:
-            # default to mode Calibrate if not the other modes
-            print("PositionController update in Calibrate mode")
-            # self.elevation_actuator.move_to(MAX_ELEVATION_DEGREES)
+        # else:
+        # default to mode Calibrate if not the other modes
+        # print("PositionController update in Calibrate mode")
+        # self.elevation_actuator.move_to(MAX_ELEVATION_DEGREES)
 
 
 class DigitalClock:
@@ -381,11 +421,15 @@ class DigitalClock:
         self.the_window = the_window
         self.clock_label = tk.Label(self.the_window, font='ariel 40')
         self.clock_label.grid(row=0, column=1, columnspan=3)
-        self.current_time = tm.strftime('%H:%M:%S')
+        sys_time = get_system_time()
+        sys_local_time = sys_time.replace(tzinfo=timezone.utc).astimezone(tz=None)
+        self.current_time = sys_local_time.strftime('%H:%M:%S')
         self.display_time()
 
     def display_time(self):
-        self.current_time = tm.strftime('%H:%M:%S')
+        sys_time = get_system_time()
+        sys_local_time = sys_time.replace(tzinfo=timezone.utc).astimezone(tz=None)
+        self.current_time = sys_local_time.strftime('%H:%M:%S')
         self.clock_label['text'] = self.current_time
         self.the_window.after(1000, self.display_time)
 
@@ -397,9 +441,11 @@ def on_closing():
 
 
 def on_tab_selected(event):
+    positionController.stop()
     selected_tab = event.widget.select()
     tab_text = event.widget.tab(selected_tab, "text")
     print(tab_text + " selected")
+    logging.info(tab_text + " Tab selected")
     uc_tab = tab_text.upper()
     if "RUN" in uc_tab:
         positionController.set_mode(Modes.RUN)
@@ -410,12 +456,12 @@ def on_tab_selected(event):
 
 
 def set_wash_position():
-    print ("Rotate to wash position")
+    print("Rotate to wash position")
     positionController.set_mode(Modes.MAINTENANCE, Maintenance.WASH_POSITION)
 
 
 def set_stormy_position():
-    print ("Rotate to stormy position")
+    print("Rotate to stormy position")
     positionController.set_mode(Modes.MAINTENANCE, Maintenance.STORM_POSITION)
 
 
@@ -439,47 +485,67 @@ def update_ui_for_wind(mode):
         windSpeedMphLabelTabOne['background'] = 'red'
 
 
+def get_solar_degrees(sys_date_time):
+    # 2020-04-10 13:05:00-00:00 format to get a row from solar_data
+    curr_date_time = sys_date_time.strftime("%Y-%m-%d %H:%M:00-00:00")
+    # print(curr_date_time)
+    # based on date / time get the desired angles to be at
+    solar_position_now = solar_data.loc[curr_date_time]
+    deg_data = {
+        "ele": round(solar_position_now.apparent_elevation, 1),
+        "azi": round(solar_position_now.azimuth, 1)
+    }
+    return deg_data
+
+
+def update_ui_calibration_tab():
+    sun_pos = get_solar_degrees(get_system_time())
+    sunAZITab3['text'] = sun_pos["azi"]
+    sunELETab3['text'] = sun_pos["ele"]
+    aziVoltageTab3['text'] = round(chan1.voltage, 4)
+    aziDegreesTab3['text'] = convert_to_degrees(ActuatorNames.AZIMUTH, chan1.voltage)
+    elevationVoltageTab3['text'] = round(chan0.voltage, 4)
+    elevationDegreesTab3['text'] = convert_to_degrees(ActuatorNames.ELEVATION, chan0.voltage)
+
+
 def get_todays_solar_data():
-    print("get_todays_solar_data")
-    today = pd.to_datetime('today').date()
-    print("today = " , today)
-    tomorrow = pd.to_datetime('today').date() + pd.to_timedelta(1, unit='D')
-    print("tomorrow = " , tomorrow)
+    today = get_system_time().date()
+    tomorrow = today + timedelta(days=1)
+    print("get_todays_solar_data() from:", today, "to:", tomorrow)
+
     # get date/times array in increments of 1 min for just today
-    times = pd.date_range(today, tomorrow, closed='left', freq='1min', tz=tz)
-    print("times", times)
+    times = pd.date_range(today, tomorrow, closed='left', freq='1min', tz=timezone.utc)
+    # print("times", times)
     # print times[0] information
     # get the solar data for these times
-    solpos = solarposition.get_solarposition(times, lat, lon)
+    solpos = solarposition.get_solarposition(times, LAT, LON)
     # keep only solar data where sun is above the horizon
     # solpos = solpos.loc[solpos['apparent_elevation'] > 0, :]
-    #print("solpos", solpos)
+    # print("solpos", solpos)
     return solpos
 
 
 def convert_to_degrees(name, ad_voltage):
-    print("ActuatorName: " + name + " ad_voltage: ", ad_voltage)
+    # print("ActuatorName: " + name + " ad_voltage: " + str(ad_voltage))
     if name == ActuatorNames.ELEVATION:
-        # substitute with calibration data when ready
-        # rough calc for now
-        # 4.1v == 32767 max reading (15 bit), pot uses a 3.3v ref voltage, max raw == 26373 == MAX_ELEVATION_DEGREES
-        # raw 0 == MIN_ELEVATION_DEGREES
-        # y = mx+b
-        m = (MAX_ELEVATION_DEGREES - MIN_ELEVATION_DEGREES) / 26373
-        # 85deg = m*26373 + 25deg -> 60 / 26373 = m -> 0.002085466196489
-        #return round(ad_voltage * m + MIN_ELEVATION_DEGREES, 1)
-        return round(ad_voltage * ELV_SLOPE + ELV_OFFSET, 1)
+        # slope m = (y-y1)/(x-x1)
+        m = (MAX_ELEVATION_DEGREES - MIN_ELEVATION_DEGREES) / (MAX_ELEVATION_VOLTS - MIN_ELEVATION_VOLTS)
+        b = MIN_ELEVATION_DEGREES - (m * MIN_ELEVATION_VOLTS)
+        degs = round(ad_voltage * m + b, 1)
+        # print("elv v=", str(round(ad_voltage,2)), " degs=", str(round(degs,1)))
+        return degs
     else:
-        return round(ad_voltage * AZI_SLOPE + AZI_OFFSET, 1)
-
-
-def get_current_solar_data_for_timestamp(ts):
-    print("get_current_solar_data_for_timestamp = " + ts)
+        m = (MAX_AZIMUTH_DEGREES - MIN_AZIMUTH_DEGREES) / (MAX_AZIMUTH_VOLTS - MIN_AZIMUTH_VOLTS)
+        b = MIN_AZIMUTH_DEGREES - (m * MIN_AZIMUTH_VOLTS)
+        degs = round(ad_voltage * m + b, 1)
+        # print("azi v=", str(round(ad_voltage,2)), " degs=", str(round(degs,1)))
+        return degs
 
 
 def update_ui_with_solar_data(sol_data_now, elv_sys_pos, azi_sys_pos):
     elv = sol_data_now.apparent_elevation
     azi = sol_data_now.azimuth
+    # print(sol_data_now)
     azimuthAngleTabOne['text'] = str(round(azi, 1)) + "\N{DEGREE SIGN}"
     elevationAngleTabOne['text'] = str(round(elv, 1)) + "\N{DEGREE SIGN}"
     elv_err = elv_sys_pos['degrees'] - elv
@@ -488,17 +554,70 @@ def update_ui_with_solar_data(sol_data_now, elv_sys_pos, azi_sys_pos):
     azimuthErrorLabelTabOne['text'] = str(round(azi_err, 1)) + "\N{DEGREE SIGN}"
 
 
+def get_system_time():
+    sys_date_time = datetime.utcnow()
+    if time_delta_adj is not None:
+        sys_date_time = sys_date_time - time_delta_adj
+        if seconds_multiplier > 1:
+            running_seconds = (sys_date_time - app_start_time).total_seconds()
+            sys_date_time = sys_date_time + timedelta(seconds=running_seconds * seconds_multiplier)
+
+    # print(sys_date_time)
+    return sys_date_time
+
+
 def heartbeat():
     global last_check_of_today
     global solar_data
-    today = pd.to_datetime('today').date()
-    if today != last_check_of_today:
-        last_check_of_today = today
-        solar_data = get_todays_solar_data()
-    positionController.update()
-    tab_parent.after(LOOP_INTERVAL_MS, heartbeat)
+    try:
+        sys_date_time = get_system_time()
+        sys_date = sys_date_time.date()
+        if sys_date != last_check_of_today:
+            last_check_of_today = sys_date
+            solar_data = get_todays_solar_data()
+
+        positionController.update(sys_date_time)
+        tab_parent.after(LOOP_INTERVAL_MS, heartbeat)
+    except Exception as e:
+        exception_type, exception_object, exception_traceback = sys.exc_info()
+        filename = exception_traceback.tb_frame.f_code.co_filename
+        line_number = exception_traceback.tb_lineno
+        print("Exception type: ", exception_type)
+        print("File name: ", filename)
+        print("Line number: ", line_number)
+
+        # stop the actuators and close the UI
+        on_closing()
 
 
+global time_delta_adj
+global app_start_time
+# set to old time
+last_check_of_today = datetime.now() - timedelta(days=366)
+print("in main")
+time_delta_adj = None
+
+# hard code while running in the IDE
+# str_adj_dt = "12/21/20 05:00:00"
+# print("adjusted datetime arg = " + str_adj_dt)
+# adj_dt = datetime.strptime(str_adj_dt, '%m/%d/%y %H:%M:%S')
+# time_delta_adj = datetime.now() - adj_dt
+app_start_time = datetime.utcnow()
+global seconds_multiplier
+seconds_multiplier = 1
+# seconds_multiplier = 720
+
+if len(sys.argv) > 1:  # if adjusted datetime passed in use it
+    str_adj_dt = sys.argv[1]
+    print("adjusted datetime arg = " + str_adj_dt)
+    adj_dt = datetime.strptime(str_adj_dt, '%m/%d/%y %H:%M:%S')
+    time_delta_adj = datetime.now() - adj_dt
+    app_start_time = datetime.utcnow() - time_delta_adj
+    seconds_multiplier = 1
+    if len(sys.argv) > 2:
+        seconds_multiplier = int(sys.argv[2])
+
+print(get_system_time())
 positionController = PositionController()
 
 form = tk.Tk()
@@ -553,18 +672,43 @@ elevationErrorLabelTabOne.grid(row=3, column=2, padx=15, pady=15)
 
 # === WIDGETS FOR 'Maintenance' TAB
 buttonWash = tk.Button(tab2, text="Wash Position", command=set_wash_position)
-buttonWash.grid(row=0, column=0, padx=15, pady=15)
-
 buttonStormy = tk.Button(tab2, text="Stormy Position", command=set_stormy_position)
+buttonWash.grid(row=0, column=0, padx=15, pady=15)
 buttonStormy.grid(row=0, column=1, padx=15, pady=15)
+# === WIDGETS FOR 'Calibration' TAB
+sunAZILabelTab3 = tk.Label(tab3, text="Sun AZI:", font='ariel 10')
+sunAZITab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+sunELELabelTab3 = tk.Label(tab3, text="Sun ELE:", font='ariel 10')
+sunELETab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+aziVoltageLabelTab3 = tk.Label(tab3, text="AZI Voltage:", font='ariel 10')
+aziDegreesLabelTab3 = tk.Label(tab3, text="AZI Degrees:", font='ariel 10')
+elevationVoltageLabelTab3 = tk.Label(tab3, text="Elevation Voltage:", font='ariel 10')
+elevationDegreesLabelTab3 = tk.Label(tab3, text="Elevation Degrees:", font='ariel 10')
+aziVoltageTab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+aziDegreesTab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+elevationVoltageTab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+elevationDegreesTab3 = tk.Label(tab3, text="0.0", font='ariel 10')
+buttonGetVoltageReadings = tk.Button(tab3, text="Actuator Readings", command=update_ui_calibration_tab)
+
+# === ADD WIDGETS TO GRID ON 'Calibration' TAB
+buttonGetVoltageReadings.grid(row=0, column=1, padx=5, pady=5)
+sunAZILabelTab3.grid(row=1, column=0, padx=5, pady=5)
+sunAZITab3.grid(row=1, column=1, padx=5, pady=5)
+aziVoltageLabelTab3.grid(row=2, column=0, padx=5, pady=5)
+aziVoltageTab3.grid(row=2, column=1, padx=5, pady=5)
+aziDegreesLabelTab3.grid(row=3, column=0, padx=5, pady=5)
+aziDegreesTab3.grid(row=3, column=1, padx=5, pady=5)
+sunAZILabelTab3.grid(row=3, column=2, padx=5, pady=5)
+sunAZITab3.grid(row=3, column=3, padx=5, pady=5)
+elevationVoltageLabelTab3.grid(row=4, column=0, padx=5, pady=5)
+elevationVoltageTab3.grid(row=4, column=1, padx=5, pady=5)
+elevationDegreesLabelTab3.grid(row=5, column=0, padx=5, pady=5)
+elevationDegreesTab3.grid(row=5, column=1, padx=5, pady=5)
+sunELELabelTab3.grid(row=5, column=2, padx=5, pady=5)
+sunELETab3.grid(row=5, column=3, padx=5, pady=5)
 
 tab_parent.pack(expand=1, fill='both')
 
 form.protocol("WM_DELETE_WINDOW", on_closing)
 
 form.mainloop()
-
-#except:
-#print("exception occurred")
-#elevation_power.start(0)
-#azimuth_power.start(0)
