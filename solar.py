@@ -37,21 +37,16 @@ MAX_ELEVATION_DEGREES = int(config.get(CONFIG_SECTION, 'MAX_ELEVATION_DEGREES'))
 MAX_ELEVATION_VOLTS = float(config.get(CONFIG_SECTION, 'MAX_ELEVATION_VOLTS'))
 ELV_MIN_DEGREES_ERR = float(config.get(CONFIG_SECTION, 'ELV_MIN_DEGREES_ERR'))
 
-POWER_ADJ_BY = float(
-    config.get(CONFIG_SECTION, 'POWER_ADJ_BY'))  # + or - power adjust percentage for each loop_interval
-LOOP_INTERVAL_MS = int(
-    config.get(CONFIG_SECTION, 'LOOP_INTERVAL_MS'))  # loop interval in milliseconds to recheck the state of things
+POWER_ADJ_BY = float(config.get(CONFIG_SECTION, 'POWER_ADJ_BY'))  # + or - power adjust percentage for each loop_interval
+LOOP_INTERVAL_MS = int(config.get(CONFIG_SECTION, 'LOOP_INTERVAL_MS'))  # loop interval in milliseconds to recheck the state of things
 
-MIN_STARTING_POWER = int(
-    config.get(CONFIG_SECTION, 'MIN_STARTING_POWER'))  # starting % actuator power to use to start increasing from
+MIN_STARTING_POWER = int(config.get(CONFIG_SECTION, 'MIN_STARTING_POWER'))  # starting % actuator power to use to start increasing from
 MAX_POWER = int(config.get(CONFIG_SECTION, 'MAX_POWER'))  # max % actuator power limit
 PWM_HZ = int(config.get(CONFIG_SECTION, 'PWM_HZ'))
 
-MAX_WIND_MPH_TO_AUTO_WINDY_MODE = int(
-    config.get(CONFIG_SECTION, 'MAX_WIND_MPH_TO_AUTO_WINDY_MODE'))  # triggers elevation switch to stormy mode
+MAX_WIND_MPH_TO_AUTO_WINDY_MODE = int(config.get(CONFIG_SECTION, 'MAX_WIND_MPH_TO_AUTO_WINDY_MODE'))  # triggers elevation switch to stormy mode
 AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = int(config.get(CONFIG_SECTION, 'AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES'))
 
-TZ = config.get(CONFIG_SECTION, 'TZ')
 LAT = float(config.get(CONFIG_SECTION, 'LAT'))
 LON = float(config.get(CONFIG_SECTION, 'LON'))
 
@@ -89,7 +84,7 @@ chan2 = AnalogIn(ads, ADS.P2)  # wind speed range from 0.4V (0 mph wind) up to 2
 solar_data = None
 
 # enable logger object
-logging.basicConfig(filename='solar.log', filemode='w', format='%(asctime)s | %(message)s', level=logging.INFO)
+logging.basicConfig(filename='solar.log', filemode='a', format='%(asctime)s | %(message)s', level=logging.INFO)
 
 
 class Modes(enum.Enum):
@@ -130,14 +125,13 @@ class Actuator:
 
     def move_to(self, to_degrees):
         # print("actu move_to " + str(self.name))
-        self.pwm_power_control.start(0)
+        # self.pwm_power_control.start(0)
         self.to_degrees = to_degrees
         curr_pos = self.get_current_position()
         curr_pos_degrees = curr_pos["degrees"]
         err_degs = to_degrees - curr_pos_degrees
 
-        logging.info("start {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees,
-                                                                           err_degs))
+        logging.info("move_to start {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees, err_degs))
         print(str(self.name) + " move_to() curr=" + str(curr_pos_degrees) + " to_deg=" + str(self.to_degrees))
         if self.value_used_to_increase_dir == GPIO.HIGH:
             decrease_value_dir = GPIO.LOW
@@ -151,14 +145,14 @@ class Actuator:
             GPIO.output(self.dir_pin, decrease_value_dir)
 
         self.powering_mode = PoweringMode.INCREASE
-        self.pwm_power_control.ChangeDutyCycle(MIN_STARTING_POWER)
+        # self.pwm_power_control.ChangeDutyCycle(MIN_STARTING_POWER)
 
     def increment_power(self):
         self.power += POWER_ADJ_BY
         # clamp at 100
         if self.power > MAX_POWER:
             self.power = MAX_POWER
-        self.pwm_power_control.ChangeDutyCycle(self.power)
+        self.pwm_power_control.start(self.power)
         print(str(self.name) + " pwr inc to=" + str(round(self.power, 1)))
 
     def decrement_power(self):
@@ -167,15 +161,13 @@ class Actuator:
         if self.power <= 0:
             self.power = 0
             self.powering_mode = PoweringMode.IDLE
-            self.pwm_power_control.stop()
+            # self.pwm_power_control.stop()
             curr_pos = self.get_current_position()
             curr_pos_degrees = curr_pos["degrees"]
             err_degs = self.to_degrees - curr_pos_degrees
-            logging.info(
-                "end {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees,
-                                                                    err_degs))
+            logging.info("move_to end {} curr={:0.1f} to={:0.1f} err={:0.1f}".format(self.name, curr_pos_degrees, self.to_degrees, err_degs))
 
-        self.pwm_power_control.ChangeDutyCycle(self.power)
+        self.pwm_power_control.start(self.power)
         print(str(self.name) + " pwr dec to=" + str(round(self.power, 1)))
 
     def update(self):
@@ -200,7 +192,7 @@ class Actuator:
             if abs(curr_degs_err) <= decr_win_size_degs:
                 self.powering_mode = PoweringMode.DECREASE
                 print(str(self.name) + " update() set powering mode to decrease")
-                self.decrement_power()
+                # self.decrement_power()
             else:
                 self.increment_power()
 
@@ -212,7 +204,7 @@ class Actuator:
     def stop(self):
         self.power = 0
         self.powering_mode = PoweringMode.IDLE
-        self.pwm_power_control.stop()
+        self.pwm_power_control.start(0)
 
     def get_current_position(self):
         pos_data = {
@@ -293,7 +285,7 @@ class PositionController:
                     print("posCntlr move elv " + str(actuator.name) + " to_deg=" + str(new_pos))
 
                 # update prev state
-                self.prev_elv_move_to_degrees = degrees
+                self.prev_elv_move_to_degrees = copy.deepcopy(degrees)
         else:
             # print("posctlr azi move =" + str(degrees) + " prev=" + str(self.prev_azi_move_to_degrees))
             # ignore issuing move_to if previous position commanded is the same
@@ -322,7 +314,7 @@ class PositionController:
                     print("posCntlr move azi " + str(actuator.name) + " to_deg=" + str(new_pos))
 
                 # update prev state
-                self.prev_azi_move_to_degrees = degrees
+                self.prev_azi_move_to_degrees = copy.deepcopy(degrees)
 
     def set_mode(self, mode, sub_mode=None):
         if mode == Modes.RUN:
@@ -379,6 +371,9 @@ class PositionController:
             solar_elv_adjusted = round(solar_position_now.apparent_elevation, 1)
             if solar_elv_adjusted < MIN_ELEVATION_DEGREES:
                 solar_elv_adjusted = MIN_ELEVATION_DEGREES
+            elif solar_elv_adjusted > MAX_ELEVATION_DEGREES:
+                # clamp ele at max if needed
+                solar_elv_adjusted = MAX_ELEVATION_DEGREES
 
             solar_azi_adjusted = round(solar_position_now.azimuth, 1)
             if solar_azi_adjusted < MIN_AZIMUTH_DEGREES:
@@ -450,6 +445,7 @@ def on_tab_selected(event):
     selected_tab = event.widget.select()
     tab_text = event.widget.tab(selected_tab, "text")
     print(tab_text + " selected")
+    logging.info(tab_text + " Tab selected")
     uc_tab = tab_text.upper()
     if "RUN" in uc_tab:
         positionController.set_mode(Modes.RUN)
