@@ -1,0 +1,34 @@
+[solar_config]
+# wash mode will tip the elevation to the minimum
+# this setting will set the azimuth to the selected degrees
+AZI_WASH_MODE_DEG = 140
+# window size in degrees used to check when to start deceleration mode
+AZI_DECREASE_WIN_DEG = 10.0
+AZI_MIN_DEGREES = 115
+AZI_MIN_VOLTS = 0.15
+AZI_MAX_DEGREES = 230
+AZI_MAX_VOLTS = 2.76
+AZI_MIN_DEGREES_ERR = 2.0
+
+# window size in degrees used to check when to start deceleration mode
+ELV_DECREASE_WIN_DEG = 5.0
+ELE_MIN_DEGREES = 25
+ELE_MIN_VOLTS = 0.5
+ELE_MAX_DEGREES = 85
+ELE_MAX_VOLTS = 3.1
+ELV_MIN_DEGREES_ERR = 1.0
+
+# + or - power adjust percentage for each loop_interval
+POWER_ADJ_BY = 8.0
+# max % actuator power limit
+POWER_MAX = 100
+PWM_HZ = 100
+# loop interval in milliseconds to recheck the state of things
+LOOP_INTERVAL_MS = 50
+
+# triggers elevation switch to stormy mode
+AUTO_WINDY_MODE_MAX_MPH = 20
+AUTO_WINDY_MODE_LOCK_OUT_TIME_MINUTES = 30
+
+LAT = 37.9810
+LON = -120.6419
