@@ -20,4 +20,4 @@ by feeding the POT wiper into the ADC.
 the application also allows for monitoring wind speed to use as a safety feature to tip the elevation into a horizontal position when winds exceed a configured threshold.
 [Anemometer](https://www.adafruit.com/product/1733)
 
-[lightning talk video](https://photos.app.goo.gl/1VDkkDudKswXe2aH9) here's a talk that explains the project at a high level.
+[lightning talk video](https://photos.app.goo.gl/ZkkSzJMid2yHtKPE7) here's a talk that explains the project at a high level.
